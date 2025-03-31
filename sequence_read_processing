@@ -1,0 +1,184 @@
+### data sources msu hpcc:  (original raw data files, now transferred to /mnt/research/lowrylab/Mimulus_RNAseq)
+
+wget -r -np -nH ftp://lowryd:4hameqEP@titan.bch.msu.edu/20160329_mRNASeq
+wget -r -np -nH ftp://lowryd:4hameqEP@titan.bch.msu.edu/20160422_mRNASeq 
+
+20160519_mRNASeq and 20160520_mRNASeq
+
+## Sequencing was processed in 3 batches (rounds) by the MSU genomics core. There are 4 sequencing pools (libraries) each with 20 barcoded samples that make up each pool. See excel file "Randomized_samples_RNAseq_dl.xlsx" for a list of which sample is in which pool.
+
+# Four Library raw reads are in /mnt/research/lowrylab/Mimulus_RNAseq:
+20160329_mRNASeq  20160422_mRNASeq  20160519_mRNASeq  20160520_mRNASeq
+
+Sequencing round  library(pool)_processed
+round1 - 			Lib 1+2
+round2 - 			Lib1+3
+round3 - 			Lib2 + 4
+
+## Samples were sequenced using the tag-seq proceedure which only sequences the 3' end of RNAs. See paper: http://onlinelibrary.wiley.com/doi/10.1111/j.1365-294X.2011.05205.x/full
+
+##Unzip raw sequencing files to scratch drive using this script: temp.qsub .  (there is not enough space for them on the research drive). 
+-------------
+#!/bin/bash -login
+#PBS -N upzip
+#PBS -l nodes=1:ppn=1
+#PBS -l walltime=3:59:00
+#PBS -l mem=2gb
+
+cd $PBS_O_WORKDIR
+
+for file in *.gz; do
+        NAME=$(basename $file ".gz")
+        gunzip -c $file > /mnt/scratch/bgould/Mimulus_RNAseq/$NAME
+done
+
+qstat -f $PBS_JOBID
+-----------------
+
+
+### Tips from Scott Schwartz ( former Juenger lab member that has processed tag-seq data before:)
+
+# For trimming
+fastx_trimmer -f 8 -Q 33 -i $hir/$ff.fastq > $hir/$ff.8toEnd.fastq
+~/cutadapt-1.7.1/build/scripts-2.7/cutadapt -a "AAAAAAAAAAAAAAA" -O 1 -e .2 --match-read-wildcards -o $hir/$ff.no3adapt.fastq $hir/$ff.8toEnd.fastq > $hir/$ff.Atrimnotes
+~/cutadapt-1.7.1/build/scripts-2.7/cutadapt -g "GGGGG" -O 1 -e .2 --match-read-wildcards -m 75 -o $hir/$ff.noadapt.fastq $hir/$ff.no3adapt.fastq > $hir/$ff.Gtrimnotes 
+ 
+# For aligning 
+bwa mem -t 1 $refDir/$ref $hir/$f > $hir/$ff.sam
+
+# for counting
+htseq-count --format=sam --mode=union --stranded=yes --type=gene --idattr=ID $f $refDir/$ref > $f.HTseq.slopped.counts
+###
+
+
+## examine the characteristics of the raw read files using FastQC software (see output files labeled  *.fastqc.html)
+
+# FastQC of initial files shows presence of polyG 5' adapter, 3' polyA adapter in about 50% of reads (expected), and low read quality at the 3' end
+
+# count raw reads in each file/sample using BASH (four text lines for each read in the file): 
+	wc -l DL-Lib1_*.fastq > lib1_raw_counts.txt & 				## remember to divide by 4  # see all raw read counts and other stats compiled in spreadsht file "read_filter_stats.xlxs"
+
+######
+#Trim the raw reads using Cutadapt and the following parameters:
+# encoding in fastq is phred 33
+# trims in this order:
+# 5' primer is NNNN followed by 3-5 G's (first step cut first 8 bases. second step, cut any remaining G's that are 5')
+# bases on both ends with quality score below 30
+# remove 15 bp 3' (-a) poly-A primer and anything that comes after it (which is more adapter readthrough)
+# allow adapter mismatch error to be 20% length of adapter
+# require at least the last two bases of the read sequence to match the poly A in order to be trimmed (-O 1)
+# consider N's in the adapter or sequence as a match for any base
+
+#trim any remaining G's from the 5' end
+#discard reads shorter than 30 bp		
+
+-------------------
+for file in DL-Lib*.fastq; do
+	NAME=$(basename $file "_R1_L001.fastq")
+	cutadapt -u 8 -q 30,30 -a "AAAAAAAAAAAAAAA" -e 0.2 -O 2 --match-read-wildcards -o trimmed/${NAME}_trimA.fastq $file
+	cutadapt -g "GGGGG" -e 0.2 -O 1 --match-read-wildcards -m 30 -o trimmed/${NAME}_trimmed.fastq trimmed/${NAME}_trimA.fastq
+done
+-------------------
+
+
+## Combine trimmed sequence files:
+--------------------
+for file in DL-Lib1*_trimmed.fastq; do
+	NAME=$(basename $file "_R1_001.fastq_trimmed.fastq")
+	cat $file ../../round1/trim30/${NAME}_trim30.fastq > ../../Lib1/${NAME}_comb.fastq 
+done
+--------------------
+
+## Align trimmed sequence reads to the reference genome using BWA MEM:
+
+# first index the reference:
+
+bwa index /mnt/research/lowrylab/Mguttatus_REF_phytozome/v2.0/assembly/Mguttatus_256_v2.0.softmasked.fa     ## as far as I can tell BWA ignores soft masking and does not allow alignments to hard masked regions
+
+# next align reads:
+--------------------
+module load bwa
+
+cd $PBS_O_WORKDIR
+
+for file in *_5trim.fastq; do
+	NAME=$(basename $file "_5trim.fastq")
+	bwa mem /mnt/research/lowrylab/Mguttatus_REF_phytozome/v2.0/assembly/Mguttatus_256_v2.0.softmasked.fa -t $PBS_NUM_PPN -M trimmed/$file > alignments/${NAME}.sam
+done
+
+qstat -f $PBS_JOBID
+-----------------------
+### ** this seems to be reporting secondary alignments . . . 
+
+
+#filter aligned reads to include only primary alignments, mapped reads, and quality alignments using Samtools: 
+# SAMTools/1.2  #version number
+# for info see
+https://www.biostars.org/p/138116/
+sam flag converter: https://broadinstitute.github.io/picard/explain-flags.html
+# filter flag 2820 = read unmapped, not primary alnmt, fails vendor check, supplementary alnmt
+-------------------
+for file in *_5trim.fastq.sam; do
+	NAME=$(basename $file "_5trim.fastq.sam")
+	samtools view -h -q 20 -F 2820 $file >${NAME}_filt75.sam
+done
+--------------------
+
+
+## count the number of total reads aligned for each sample using Samtools (view -c) :  # see compiled results in file "read_filter_stats.xlxs"
+-------------
+for file in *_filt75.sam; do echo $file >>filt_aln_counts.txt; samtools view -c $file >>filt_aln_counts.txt; done &
+-----------------------
+
+(# de-duplicate alignments:) #skip this step b/c low complexity at the 3p end looks like pcr duplicates and filters out too many reads. . . see email threads on this.
+for file in *.sam; do
+	NAME=$(basename $file "_5trim.fastq.sam")
+	java -jar $PICARD/SortSam.jar I=$file O=${NAME}.sort.sam SO=coordinate
+	java -jar $PICARD/MarkDuplicates.jar I=${NAME}.sort.sam O=${NAME}.dedup75.sam M=${NAME}_dupstat.txt VALIDATION_STRINGENCY=SILENT REMOVE_DUPLICATES=true
+done
+
+
+# count the number of reads aligned per gene, per sample,  using HT-seq:        
+# more info at: http://www-huber.embl.de/users/anders/HTSeq/doc/count.html#count
+# HTSeq/0.6.1 #version
+# There are 28145 genes
+-----------------
+module load htseq
+
+for file in *.sam; do NAME=$(basename $file ".sam"); echo $NAME >> ${NAME}_gene_counts.txt; htseq-count --format=sam --mode=union --stranded=yes --type=gene --idattr=ID $file /mnt/research/lowrylab/Mguttatus_REF_phytozome/v2.0/annotation/Mguttatus_256_v2.0.gene.gff3 >> ${NAME}_gene_counts.txt; done &
+
+-------------------
+#see result files, one per sample, at /mnt/resarch/lowrylab/Mimulus_RNAseq/count_data/*_gene_counts.txt  (or *_filtered_gene_counts.txt)
+#why stranded = yes? -- see scott's email on this and link at : https://www.biostars.org/p/70833/
+
+# use split if all data ends up in one file: 
+split -l 28146 Lib1comb_gene_counts.txt
+
+
+# Combine all gene read count data into one file and then filter out genes that are not expressed in all the samples. Filter out all genes with fewer than 5 reads aligned. Use AWK : 
+for file in x*; do line=$(head -n 1 $file); echo $line >> all_gt5read.gene_counts;  awk '$2>=5 { count++ } END { print count }' $file >> all_gt5read.gene_counts; done &
+
+
+#Generate rarefaction curves to see if we would predict being able to detect more expressed genes if we sequenced more reads:  # see results plotted as curve in "read_filter_stats.xlxs"
+
+#loop to randomly sample subsets of reads from sam files using Picardtools:
+------------------
+for r in `seq 0.05 0.05 0.95`; do
+        java -jar $PICARD/DownsampleSam.jar I=DL-Lib1_19_CACGTA_L001.sam O=raref/Lib1comb_19_${r}.sam PROBABILITY=$r
+done
+----------------
+
+#loop to count genes hit in each random reads file. (note these scripts cant be combined I think b/c the htseq output isnt written quickly enough for the next command)
+-----------------
+module load htseq
+for file in *.sam; do
+	NAME=$(basename $file ".sam")  
+	htseq-count --format=sam --mode=union --stranded=yes --type=gene --idattr=ID $file /mnt/research/lowrylab/Mguttatus_REF_phytozome/v2.0/annotation/Mguttatus_256_v2.0.gene.gff3 >> ${NAME}_gene_counts.txt
+
+for file in *.sam;do
+	NAME=$(basename $file ".sam") 	
+	echo $NAME  >> rarefaction.txt
+	awk ‘$2>=5 { count++ }; END { print count >> “rarefaction.txt” }’ ${NAME}_gene_counts.txt
+done
+---------------------
+## Overall conclusion, more sequencing would not yield many more expressed genes.
