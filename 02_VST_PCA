@@ -1,0 +1,289 @@
+# Load required libraries
+library(DESeq2)
+library(ggplot2)
+library(dplyr)
+library(pheatmap)
+library(RColorBrewer)
+
+#==== DATA IMPORT ====
+# Reading gene expression data
+gene_counts <- read.table("all_counts_R_input.txt", 
+                         header = TRUE, 
+                         row.names = 1, 
+                         sep = "\t", 
+                         check.names = FALSE)
+                         
+# Reading sample information from file
+# Assuming sample_info.txt is tab-delimited with headers
+sample_info <- read.csv("All_Counts_Sample_Info.csv", 
+                         header = TRUE, 
+                         sep = ",", 
+                         stringsAsFactors = FALSE)
+                         
+# Set row names for sample_info to match column names in gene_counts
+rownames(sample_info) <- as.character(sample_info$sample_number)
+
+# Make sure sample numbers match between count data and sample info
+all(colnames(gene_counts) %in% rownames(sample_info))
+
+# Convert factors
+sample_info$genotype <- factor(sample_info$genotype)
+sample_info$development_stage <- factor(sample_info$development_stage, 
+                                      levels = c("2leaf", "4leaf", "6leaf", "8leaf", "bud"))
+sample_info$Library_Pool <- factor(sample_info$Library_Pool)
+sample_info$Primer <- factor(sample_info$Primer)
+
+# Display dimensions
+cat("Dimensions of gene expression data:", dim(gene_counts)[1], "genes x", dim(gene_counts)[2], "samples\n")
+cat("Number of samples in metadata:", nrow(sample_info), "\n")
+
+#==== DATA PROCESSING ====
+# Check and ensure count data is a matrix of integers
+count_matrix <- as.matrix(gene_counts)
+mode(count_matrix) <- "integer"
+
+# Create DESeq2 dataset with meaningful design
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = sample_info,
+  design = ~ genotype + development_stage + Library_Pool  # Adjust based on your research question
+)
+
+# Filter out genes with low counts
+keep <- rowSums(counts(dds) >= 10) >= 5  # Genes with at least 10 counts in at least 5 samples
+dds <- dds[keep,]
+print(paste("Number of genes after filtering:", nrow(dds)))
+
+# Apply variance stabilizing transformation
+vst_data <- vst(dds, blind = TRUE)
+vst_matrix <- assay(vst_data)
+
+# Save the VST matrix for potential future use
+write.csv(vst_matrix, "vst_transformed_data.csv")
+
+#==== PCA ANALYSIS ====
+# Perform PCA on the VST-transformed data
+pca_result <- prcomp(t(vst_matrix), scale. = FALSE)
+percentVar <- round(100 * pca_result$sdev^2 / sum(pca_result$sdev^2), 1)
+
+# Create a data frame with the PCA results and metadata
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  PC3 = pca_result$x[, 3],
+  PC4 = pca_result$x[, 4],
+  sample_name = sample_info[rownames(pca_result$x), "sample_name"],
+  sample_number = sample_info[rownames(pca_result$x), "sample_number"],
+  genotype = sample_info[rownames(pca_result$x), "genotype"],
+  development_stage = sample_info[rownames(pca_result$x), "development_stage"],
+  Library_Pool = sample_info[rownames(pca_result$x), "Library_Pool"],
+  Primer = sample_info[rownames(pca_result$x), "Primer"]
+)
+
+#==== VISUALIZATION ====
+# Create color-blind friendly palettes
+stage_colors <- brewer.pal(5, "Set1")
+genotype_colors <- c("darkblue", "darkorange")
+library_colors <- brewer.pal(4, "Dark2")
+
+# Plot PCA by development stage
+p1 <- ggplot(pca_data, aes(x = PC1, y = PC2, color = development_stage, shape = genotype)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = stage_colors) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA of VST-transformed gene expression") +
+  theme_classic() +
+  theme(legend.position = "right")
+
+# Plot PCA by genotype
+p2 <- ggplot(pca_data, aes(x = PC1, y = PC2, color = genotype, shape = development_stage)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = genotype_colors) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA of VST-transformed gene expression") +
+  theme_classic() +
+  theme(legend.position = "right")
+
+# Plot PCA by library pool
+p3 <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Library_Pool)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = library_colors) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA by Library Pool (technical factor)") +
+  theme_classic()
+  
+# Plot PCA by development stage (for publication)
+p1 <- ggplot(pca_data, aes(x = PC1, y = PC2, color = development_stage, shape = genotype)) + 
+  geom_point(size = 3) + 
+  scale_color_manual(values = stage_colors) + 
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) + 
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  ggtitle("PCA of VST-transformed gene expression") + 
+  theme_classic() + 
+  theme(
+    axis.text = element_text(size = 14),          # Increase axis text size
+    axis.title = element_text(size = 16, face = "bold"),  # Increase axis label size and make bold
+    legend.title = element_text(size = 14, face = "bold"), # Increase legend title size
+    legend.text = element_text(size = 12),        # Increase legend text size
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5), # Increase title size
+    legend.position = "right"
+  ) +
+  labs(color = "Developmental Stage", shape = "Genotype")
+
+
+# Print the plots
+print(p1)
+print(p2)
+print(p3)
+
+# Also create PC3 vs PC4 plot
+p4 <- ggplot(pca_data, aes(x = PC3, y = PC4, color = development_stage, shape = genotype)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = stage_colors) +
+  xlab(paste0("PC3: ", percentVar[3], "% variance")) +
+  ylab(paste0("PC4: ", percentVar[4], "% variance")) +
+  ggtitle("PCA of VST-transformed gene expression (PC3 vs PC4)") +
+  theme_classic()
+
+print(p4)
+
+# Create scree plot to visualize variance explained by each PC
+scree_data <- data.frame(
+  PC = 1:length(percentVar),
+  PercentVariance = percentVar
+)
+
+scree_plot <- ggplot(scree_data[1:15,], aes(x = PC, y = PercentVariance)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(PercentVariance, "%")), vjust = -0.5) +
+  xlab("Principal Component") +
+  ylab("Percent Variance Explained") +
+  ggtitle("Scree Plot (First 15 PCs)") +
+  theme_classic()
+
+print(scree_plot)
+
+# Visualize sample distances
+sample_dist <- dist(t(vst_matrix))
+sample_dist_matrix <- as.matrix(sample_dist)
+
+# Create custom annotation colors
+anno_colors <- list(
+  genotype = c(Coast = "darkorange", Inland = "darkblue"),
+  development_stage = c("2leaf" = stage_colors[1], "4leaf" = stage_colors[2], 
+                      "6leaf" = stage_colors[3], "8leaf" = stage_colors[4], 
+                      "bud" = stage_colors[5]),
+  Library_Pool = c("1" = library_colors[1], "2" = library_colors[2], 
+                 "3" = library_colors[3], "4" = library_colors[4])
+)
+
+# Prepare annotation data frame
+annotation_col <- data.frame(
+  genotype = sample_info$genotype,
+  development_stage = sample_info$development_stage,
+  Library_Pool = factor(sample_info$Library_Pool),
+  row.names = rownames(sample_info)
+)
+
+# Heatmap of sample distances
+pheatmap(sample_dist_matrix,
+         main = "Sample Distances",
+         annotation_col = annotation_col,
+         annotation_colors = anno_colors,
+         show_colnames = FALSE,  # With 80 samples, names would be too crowded
+         fontsize = 8)
+
+# Extract top contributing genes to PCs
+loadings <- pca_result$rotation
+top_genes_pc1 <- head(rownames(loadings)[order(abs(loadings[,1]), decreasing = TRUE)], 100)
+top_genes_pc2 <- head(rownames(loadings)[order(abs(loadings[,2]), decreasing = TRUE)], 100)
+
+# Print top genes
+cat("Top 100 genes contributing to PC1:\n")
+print(top_genes_pc1)
+cat("\nTop 100 genes contributing to PC2:\n")
+print(top_genes_pc2)
+
+# Save the PCA results to a file
+write.csv(pca_data, "pca_results.csv")
+
+# Save the top genes and their loadings to a file
+write.csv(
+  data.frame(
+    PC1_genes = top_genes_pc1,
+    PC1_loadings = loadings[top_genes_pc1, 1],
+    PC2_genes = top_genes_pc2,
+    PC2_loadings = loadings[top_genes_pc2, 2]
+  ),
+  "top_genes_pca.csv",
+  row.names = FALSE
+)
+
+# Optional: Visualize expression patterns of top genes
+# Select a subset of top contributing genes for visibility
+top_genes_combined <- unique(c(top_genes_pc1[1:15], top_genes_pc2[1:15]))
+
+# Create heatmap of expression for top genes
+pheatmap(
+  vst_matrix[top_genes_combined, ],
+  scale = "row",  # Scale by row to show relative expression
+  annotation_col = annotation_col,
+  annotation_colors = anno_colors,
+  main = "Expression of top PCA-contributing genes",
+  show_rownames = TRUE,
+  show_colnames = FALSE,  # Too many samples to show names
+  fontsize_row = 8,
+  cluster_cols = TRUE,
+  cluster_rows = TRUE
+)
+
+# Examine if genotype and development stage interact
+# Create interaction PCA plot
+pca_data$genotype_stage <- interaction(pca_data$genotype, pca_data$development_stage)
+
+p5 <- ggplot(pca_data, aes(x = PC1, y = PC2, color = genotype_stage)) +
+  geom_point(size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA by Genotype and Development Stage Interaction") +
+  theme_classic() +
+  theme(legend.position = "right", 
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8))
+
+print(p5)
+
+# Save all plots to PDF
+pdf("pca_plots.pdf", width = 12, height = 10)
+print(p1)
+print(p2)
+print(p3)
+print(p4)
+print(p5)
+print(scree_plot)
+dev.off()
+
+#Rewritten to produce figure for publication 
+p1 <- ggplot(pca_data, aes(x = PC1, y = PC2, color = development_stage, shape = genotype)) + 
+     geom_point(size = 4) + 
+     scale_color_manual(values = stage_colors) + 
+     xlab(paste0("PC1: ", percentVar[1], "% variance")) + 
+     ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+     theme_classic() + 
+     theme(
+         axis.text = element_text(size = 14),          # Increase axis text size
+         axis.title = element_text(size = 16, face = "bold"),  # Increase axis label size and make bold
+         legend.title = element_text(size = 14, face = "bold"), # Increase legend title size
+         legend.text = element_text(size = 12),        # Increase legend text size
+         plot.title = element_text(size = 18, face = "bold", hjust = 0.5), # Increase title size
+         legend.position = "right"
+     ) +
+     labs(color = "Developmental Stage", shape = "Genotype")
+> print(p1)
+> pdf("pca_2.pdf", width = 8, height = 6)
+> print(p1)
+> dev.off()
+
