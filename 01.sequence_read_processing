@@ -1,4 +1,5 @@
 ### data sources msu hpcc:  (original raw data files, now transferred to /mnt/research/lowrylab/Mimulus_RNAseq)
+#Code by Billie Gould
 
 wget -r -np -nH ftp://lowryd:4hameqEP@titan.bch.msu.edu/20160329_mRNASeq
 wget -r -np -nH ftp://lowryd:4hameqEP@titan.bch.msu.edu/20160422_mRNASeq 
