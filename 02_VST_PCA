@@ -1,3 +1,5 @@
+#Code by David Lowry with assistance by Claude.ai
+
 # Load required libraries
 library(DESeq2)
 library(ggplot2)
