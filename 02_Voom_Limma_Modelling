@@ -1,0 +1,276 @@
+#Install limma and edgeR
+
+if (!require("BiocManager", quietly = TRUE))
+     install.packages("BiocManager")
+
+BiocManager::install("limma")
+BiocManager::install("edgeR")
+
+# Reading gene expression data
+gene_counts <- read.table("all_counts_R_input.txt", 
+                         header = TRUE, 
+                         row.names = 1, 
+                         sep = "\t", 
+                         check.names = FALSE)
+                         
+# Reading sample information from file
+sample_info <- read.csv("All_Counts_Sample_Info.csv", 
+                        header = TRUE, 
+                        sep = ",", 
+                        stringsAsFactors = FALSE)
+                         
+# Set row names for sample_info to match column names in gene_counts
+rownames(sample_info) <- as.character(sample_info$sample_number)
+
+# Make sure sample numbers match between count data and sample info
+all(colnames(gene_counts) %in% rownames(sample_info))
+
+# Convert factors
+sample_info$genotype <- factor(sample_info$genotype)
+sample_info$development_stage <- factor(sample_info$development_stage, 
+                                      levels = c("2leaf", "4leaf", "6leaf", "8leaf", "bud"))
+sample_info$Library_Pool <- factor(sample_info$Library_Pool)
+sample_info$Primer <- factor(sample_info$Primer)
+
+# Filter to include only 2leaf, 4leaf, and bud samples
+filtered_samples <- sample_info$development_stage %in% c("2leaf", "4leaf", "bud")
+filtered_sample_info <- sample_info[filtered_samples, ]
+filtered_gene_counts <- gene_counts[, rownames(filtered_sample_info)]
+
+# Verify filtering was successful
+table(filtered_sample_info$development_stage)
+
+# Relevel the development_stage factor to only include the stages we're analyzing
+filtered_sample_info$development_stage <- factor(filtered_sample_info$development_stage, 
+                                              levels = c("2leaf", "4leaf", "bud"))
+
+# Load necessary libraries for voom-limma analysis
+library(limma)
+library(edgeR)
+
+# Create DGEList object
+dge <- DGEList(counts = filtered_gene_counts)
+
+# Calculate normalization factors
+dge <- calcNormFactors(dge)
+
+# Filter lowly expressed genes
+keep <- filterByExpr(dge, group = filtered_sample_info$genotype)
+dge <- dge[keep, ]
+dim(dge)
+
+# Design matrix with interaction term
+# Set reference levels to Inland and 2leaf
+filtered_sample_info$genotype <- relevel(filtered_sample_info$genotype, ref = "Inland")
+filtered_sample_info$development_stage <- relevel(filtered_sample_info$development_stage, ref = "2leaf")
+
+# Create design matrix with interaction term - this implements:
+# gene expression ~ genotype + developmental_stage + genotype:developmental_stage
+design <- model.matrix(~ genotype * development_stage, data = filtered_sample_info)
+
+# Display the design matrix column names to understand the model
+print("Design matrix column names (model terms):")
+print(colnames(design))
+
+# Apply voom transformation
+v <- voom(dge, design, plot = TRUE)
+
+# Fit linear model
+fit <- lmFit(v, design)
+
+# Apply empirical Bayes moderation
+fit <- eBayes(fit)
+
+# Summary of results for all model terms
+print("Summary of differential expression results across all model terms:")
+summary(decideTests(fit))
+
+# For clarity, here's what the design matrix captures:
+# (Intercept) - The baseline level (Inland genotype at 2leaf stage)
+# genotypeCoast - The effect of Coast genotype (vs Inland) at 2leaf stage
+# development_stage4leaf - The effect of 4leaf stage (vs 2leaf) in Inland genotype
+# development_stagebud - The effect of bud stage (vs 2leaf) in Inland genotype
+# genotypeCoast:development_stage4leaf - The INTERACTION effect (how the genotype effect differs at 4leaf vs 2leaf)
+# genotypeCoast:development_stagebud - The INTERACTION effect (how the genotype effect differs at bud vs 2leaf)
+
+# Test for overall effect of genotype across all developmental stages
+# This tests whether the genotype terms (main effect + interactions) are jointly significant
+genotype_coefs <- grep("genotype", colnames(fit$coefficients), value = TRUE)
+genotype_overall <- contrasts.fit(fit, contrasts = makeContrasts(
+  GenotypeEffect = genotypeCoast,
+  levels = colnames(fit$coefficients)
+))
+genotype_overall <- eBayes(genotype_overall)
+genotype_overall_results <- topTable(genotype_overall, number = Inf)
+head(genotype_overall_results)
+
+# Test for overall effect of developmental stage
+# This tests whether the developmental stage terms (main effects + interactions) are jointly significant
+devstage_coefs <- grep("development_stage", colnames(fit$coefficients), value = TRUE)
+devstage_contrast <- makeContrasts(
+  Stage4leafEffect = development_stage4leaf,
+  StageBudEffect = development_stagebud,
+  levels = colnames(fit$coefficients)
+)
+devstage_overall <- contrasts.fit(fit, contrasts = devstage_contrast)
+devstage_overall <- eBayes(devstage_overall)
+devstage_overall_results <- topTable(devstage_overall, number = Inf)
+head(devstage_overall_results)
+
+# Test for overall interaction effect
+# This tests whether the interaction terms are jointly significant
+interaction_coefs <- grep(":", colnames(fit$coefficients), value = TRUE)
+interaction_contrast <- makeContrasts(
+  Interaction4leaf = genotypeCoast:development_stage4leaf,
+  InteractionBud = genotypeCoast:development_stagebud,
+  levels = colnames(fit$coefficients)
+)
+interaction_overall <- contrasts.fit(fit, contrasts = interaction_contrast)
+interaction_overall <- eBayes(interaction_overall)
+interaction_overall_results <- topTable(interaction_overall, number = Inf)
+head(interaction_overall_results)
+
+# Now test for individual effects as well
+# Extract results for genotype effect (Coast vs Inland)
+genotype_results <- topTable(fit, coef = "genotypeCoast", number = Inf, sort.by = "P")
+head(genotype_results)
+
+# Results for development stage effects (4leaf vs 2leaf)
+stage_4leaf_results <- topTable(fit, coef = "development_stage4leaf", number = Inf, sort.by = "P")
+head(stage_4leaf_results)
+
+# Results for development stage effects (bud vs 2leaf)
+stage_bud_results <- topTable(fit, coef = "development_stagebud", number = Inf, sort.by = "P")
+head(stage_bud_results)
+
+# Results for interaction effects (Coast:4leaf vs Inland:4leaf)
+interaction_4leaf_results <- topTable(fit, coef = "genotypeCoast:development_stage4leaf", number = Inf, sort.by = "P")
+head(interaction_4leaf_results)
+
+# Results for interaction effects (Coast:bud vs Inland:bud)
+interaction_bud_results <- topTable(fit, coef = "genotypeCoast:development_stagebud", number = Inf, sort.by = "P")
+head(interaction_bud_results)
+
+# Write significant genes to files
+write.csv(sig_genotype, "voom_significant_genes_genotype.csv")
+write.csv(sig_stage_4leaf, "voom_significant_genes_4leaf_vs_2leaf.csv")
+write.csv(sig_stage_bud, "voom_significant_genes_bud_vs_2leaf.csv")
+write.csv(sig_interaction_4leaf, "voom_significant_genes_interaction_4leaf.csv")
+write.csv(sig_interaction_bud, "voom_significant_genes_interaction_bud.csv")
+write.csv(sig_genotype_overall, "voom_significant_genes_overall_genotype.csv")
+write.csv(sig_devstage_overall, "voom_significant_genes_overall_devstage.csv")
+write.csv(sig_interaction_overall, "voom_significant_genes_overall_interaction.csv")
+
+# Volcano plots
+library(ggplot2)
+
+# Function to create volcano plot
+create_volcano_plot <- function(results, title, file_name) {
+  # Add a column indicating significance
+  results$significant <- ifelse(results$adj.P.Val < 0.05, "FDR < 0.05", "Not significant")
+  
+  # Create plot
+  p <- ggplot(results, aes(x = logFC, y = -log10(P.Value), color = significant)) +
+    geom_point(alpha = 0.6) +
+    scale_color_manual(values = c("FDR < 0.05" = "red", "Not significant" = "black")) +
+    labs(title = title, x = "Log2 Fold Change", y = "-log10(P-value)") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  
+  # Save plot
+  ggsave(file_name, p, width = 8, height = 6)
+  
+  return(p)
+}
+
+# Create volcano plots
+volcano_genotype <- create_volcano_plot(genotype_results, "Genotype Effect (Coast vs Inland)", "voom_volcano_genotype.png")
+volcano_4leaf <- create_volcano_plot(stage_4leaf_results, "4leaf vs 2leaf Effect", "voom_volcano_4leaf.png")
+volcano_bud <- create_volcano_plot(stage_bud_results, "Bud vs 2leaf Effect", "voom_volcano_bud.png")
+volcano_int_4leaf <- create_volcano_plot(interaction_4leaf_results, "Genotype:4leaf Interaction", "voom_volcano_int_4leaf.png")
+volcano_int_bud <- create_volcano_plot(interaction_bud_results, "Genotype:bud Interaction", "voom_volcano_int_bud.png")
+
+# MDS plot (equivalent to PCA in limma/voom)
+plotMDS(v, labels = paste(filtered_sample_info$genotype, filtered_sample_info$development_stage, sep="-"),
+        col = c("blue", "red")[as.numeric(filtered_sample_info$genotype)],
+        main = "MDS Plot")
+
+# Enhanced MDS plot with ggplot2
+# Extract MDS data
+mds <- plotMDS(v, plot = FALSE)
+mds_data <- data.frame(Dimension1 = mds$x, Dimension2 = mds$y,
+                       Genotype = filtered_sample_info$genotype,
+                       Stage = filtered_sample_info$development_stage)
+
+# Create enhanced MDS plot
+mds_plot <- ggplot(mds_data, aes(x = Dimension1, y = Dimension2, color = Genotype, shape = Stage)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Coast" = "blue", "Inland" = "red")) +
+  labs(title = "MDS Plot of RNA-seq data (Coast vs Inland)",
+       x = "Dimension 1", y = "Dimension 2") +
+  theme_bw()
+
+# Save MDS plot
+ggsave("voom_mds_plot.png", mds_plot, width = 8, height = 6)
+
+# Heatmap of top differentially expressed genes
+library(pheatmap)
+
+# Combine results from all comparisons
+all_results <- data.frame(
+  genotype_p = genotype_results$adj.P.Val,
+  stage_4leaf_p = stage_4leaf_results$adj.P.Val,
+  stage_bud_p = stage_bud_results$adj.P.Val,
+  int_4leaf_p = interaction_4leaf_results$adj.P.Val,
+  int_bud_p = interaction_bud_results$adj.P.Val
+)
+rownames(all_results) <- rownames(genotype_results)
+
+# Find minimum adjusted p-value across all comparisons
+all_results$min_p <- apply(all_results, 1, min)
+all_results <- all_results[order(all_results$min_p), ]
+
+# Select top 50 genes
+top50_genes <- rownames(all_results)[1:50]
+
+# Get expression data for these genes
+top50_expr <- v$E[top50_genes, ]
+
+# Sample annotation for heatmap
+sample_annot <- data.frame(
+  Genotype = filtered_sample_info$genotype,
+  Stage = filtered_sample_info$development_stage,
+  row.names = colnames(top50_expr)
+)
+
+# Create color map
+ann_colors <- list(
+  Genotype = c(Coast = "blue", Inland = "red"),
+  Stage = c("2leaf" = "lightgreen", "4leaf" = "darkgreen", "bud" = "purple")
+)
+
+# Create heatmap
+pheatmap(top50_expr,
+         annotation_col = sample_annot,
+         annotation_colors = ann_colors,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         show_rownames = FALSE,
+         main = "Top 50 Differentially Expressed Genes",
+         filename = "voom_top50_heatmap.png",
+         width = 8,
+         height = 10)
+
+# Save complete results
+write.csv(genotype_results, "voom_all_genes_genotype_effect.csv")
+write.csv(stage_4leaf_results, "voom_all_genes_4leaf_vs_2leaf_effect.csv")
+write.csv(stage_bud_results, "voom_all_genes_bud_vs_2leaf_effect.csv")
+write.csv(interaction_4leaf_results, "voom_all_genes_interaction_4leaf_effect.csv")
+write.csv(interaction_bud_results, "voom_all_genes_interaction_bud_effect.csv")
+write.csv(genotype_overall_results, "voom_all_genes_overall_genotype.csv")
+write.csv(devstage_overall_results, "voom_all_genes_overall_devstage.csv")
+write.csv(interaction_overall_results, "voom_all_genes_overall_interaction.csv")
+
+# Session info for reproducibility
+sessionInfo()
