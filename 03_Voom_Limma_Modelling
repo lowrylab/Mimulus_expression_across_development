@@ -99,66 +99,58 @@ coef_names <- colnames(fit$coefficients)
 print("Model coefficients:")
 print(coef_names)
 
-# ----- Use a different approach with limma's contrast functionality -----
+# ----- Individual coefficient tests (t-tests) -----
 
-# For testing genotype main effects only
-# Create a contrast vector for just the genotype main effect
-genotype_contrast <- rep(0, length(coef_names))
-names(genotype_contrast) <- coef_names
-genotype_contrast["genotypeCoast"] <- 1
+# For testing genotype main effect only (t-test)
+genotype_results <- topTable(fit, coef = "genotypeCoast", number = Inf, sort.by = "P")
+head(genotype_results)
 
-# Apply the contrast
-genotype_overall <- contrasts.fit(fit, contrasts=genotype_contrast)
-genotype_overall <- eBayes(genotype_overall)
-genotype_overall_results <- topTable(genotype_overall, number=Inf)
-head(genotype_overall_results)
+# Results for development stage effects (4leaf vs 2leaf) - t-test
+stage_4leaf_results <- topTable(fit, coef = "development_stage4leaf", number = Inf, sort.by = "P")
+head(stage_4leaf_results)
 
-# For developmental stage main effects
-# Create a contrast vector for the development stage effects
-stage_4leaf_contrast <- rep(0, length(coef_names))
-names(stage_4leaf_contrast) <- coef_names
-stage_4leaf_contrast["development_stage4leaf"] <- 1
+# Results for development stage effects (bud vs 2leaf) - t-test
+stage_bud_results <- topTable(fit, coef = "development_stagebud", number = Inf, sort.by = "P")
+head(stage_bud_results)
 
-stage_bud_contrast <- rep(0, length(coef_names))
-names(stage_bud_contrast) <- coef_names
-stage_bud_contrast["development_stagebud"] <- 1
+# Results for interaction effects (Coast:4leaf) - t-test
+interaction_4leaf_results <- topTable(fit, coef = "genotypeCoast:development_stage4leaf", number = Inf, sort.by = "P")
+head(interaction_4leaf_results)
 
-# Apply combined contrasts for developmental stages
-devstage_contrasts <- cbind(stage_4leaf_contrast, stage_bud_contrast)
-colnames(devstage_contrasts) <- c("4leaf_vs_2leaf", "bud_vs_2leaf")
+# Results for interaction effects (Coast:bud) - t-test
+interaction_bud_results <- topTable(fit, coef = "genotypeCoast:development_stagebud", number = Inf, sort.by = "P")
+head(interaction_bud_results)
 
-devstage_overall <- contrasts.fit(fit, contrasts=devstage_contrasts)
-devstage_overall <- eBayes(devstage_overall)
-devstage_overall_results <- topTable(devstage_overall, number=Inf)
-head(devstage_overall_results)
+# ----- F-tests for overall effects -----
 
-# For interaction terms
-# Create contrast vectors for the interaction effects
-int_4leaf_contrast <- rep(0, length(coef_names))
-names(int_4leaf_contrast) <- coef_names
-int_4leaf_contrast[grep("genotypeCoast:development_stage4leaf", coef_names)] <- 1
+# F-test for all genotype-related terms (main effect + interactions)
+# This tests whether genotype has any significant effect (main or interaction)
+genotype_coefs <- grep("genotype", coef_names, value = TRUE)
+print("Genotype-related coefficients for F-test:")
+print(genotype_coefs)
 
-int_bud_contrast <- rep(0, length(coef_names))
-names(int_bud_contrast) <- coef_names
-int_bud_contrast[grep("genotypeCoast:development_stagebud", coef_names)] <- 1
+# Proper F-test for overall genotype effect
+genotype_ftest <- topTable(fit, coef = genotype_coefs, number = Inf, sort.by = "F")
+head(genotype_ftest)
 
-# Apply combined contrasts for interactions
-int_contrasts <- cbind(int_4leaf_contrast, int_bud_contrast)
-colnames(int_contrasts) <- c("interaction_4leaf", "interaction_bud")
+# F-test for all developmental stage-related terms (main effects + interactions)
+# This tests whether developmental stage has any significant effect
+devstage_coefs <- grep("development_stage", coef_names, value = TRUE)
+print("Developmental stage-related coefficients for F-test:")
+print(devstage_coefs)
 
-interaction_overall <- contrasts.fit(fit, contrasts=int_contrasts)
-interaction_overall <- eBayes(interaction_overall)
-interaction_overall_results <- topTable(interaction_overall, number=Inf)
-head(interaction_overall_results)
+# Proper F-test for overall developmental stage effect
+devstage_ftest <- topTable(fit, coef = devstage_coefs, number = Inf, sort.by = "F")
+head(devstage_ftest)
 
-# For a joint F-test of all interaction terms together (most relevant for your question about interaction effects)
-# This tests whether there are ANY significant interaction effects
-int_joint <- cbind(int_4leaf_contrast, int_bud_contrast)
-colnames(int_joint) <- c("int_4leaf", "int_bud")
-int_joint_fit <- contrasts.fit(fit, contrasts=int_joint)
-int_joint_fit <- eBayes(int_joint_fit)
-# F-test across all interaction terms
-int_ftest <- topTable(int_joint_fit, number=Inf, sort.by="F")
+# F-test for only interaction terms
+# This tests whether there are any significant interaction effects
+int_coefs <- grep(":", coef_names, value = TRUE)
+print("Interaction coefficients for F-test:")
+print(int_coefs)
+
+# Proper F-test for overall interaction effect
+int_ftest <- topTable(fit, coef = int_coefs, number = Inf, sort.by = "F")
 head(int_ftest)
 
 # Now test for individual effects as well
@@ -297,17 +289,17 @@ pheatmap(top50_expr,
          height = 10)
 
 # Save complete results for all genes
-# Individual coefficient tests
-write.csv(genotype_results, "voom_all_genes_genotype_effect.csv")
-write.csv(stage_4leaf_results, "voom_all_genes_4leaf_vs_2leaf_effect.csv")
-write.csv(stage_bud_results, "voom_all_genes_bud_vs_2leaf_effect.csv")
-write.csv(interaction_4leaf_results, "voom_all_genes_interaction_4leaf_effect.csv")
-write.csv(interaction_bud_results, "voom_all_genes_interaction_bud_effect.csv")
+# Individual coefficient t-tests
+write.csv(genotype_results, "voom_all_genes_genotype_ttest.csv")
+write.csv(stage_4leaf_results, "voom_all_genes_4leaf_vs_2leaf.csv")
+write.csv(stage_bud_results, "voom_all_genes_bud_vs_2leaf.csv")
+write.csv(interaction_4leaf_results, "voom_all_genes_interaction_4leaf.csv")
+write.csv(interaction_bud_results, "voom_all_genes_interaction_bud.csv")
 
 # Overall F-test results
-write.csv(genotype_overall_results, "voom_all_genes_overall_genotype.csv")
-write.csv(devstage_overall_results, "voom_all_genes_overall_devstage.csv")
-write.csv(int_ftest, "voom_all_genes_overall_interaction.csv")
+write.csv(genotype_ftest, "voom_all_genes_overall_genotype_ftest.csv")
+write.csv(devstage_ftest, "voom_all_genes_overall_devstage_ftest.csv")
+write.csv(int_ftest, "voom_all_genes_overall_interaction_ftest.csv")
 
 # Session info for reproducibility
 sessionInfo()
