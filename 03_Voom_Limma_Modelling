@@ -1,6 +1,6 @@
-#Install limma and edgeR
-#Code by David Lowry with assistance by Claude.ai
+#R Code by David Lowry with assistance by Claude.ai
 
+#Install limma and edgeR
 if (!require("BiocManager", quietly = TRUE))
      install.packages("BiocManager")
 
